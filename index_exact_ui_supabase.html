@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bateria — Supabase (Dashboard • Ritmistas • Ensaios • Backup)</title>
+  <meta name="description" content="App multiusuário com Supabase, pronto para Vercel.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { --font: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    body { font-family: var(--font); }
+    .btn { padding: .5rem .75rem; border-radius: 1rem; font-size: .875rem; font-weight: 600; }
+    .btn-ghost { border: 1px solid #e5e7eb; }
+    .btn-ghost:hover { background: #f9fafb; }
+    .btn-dark { background: #000; color: #fff; }
+    .btn-dark:hover { background: #111827; }
+    .btn-green { background: #16a34a; color: #fff; }
+    .btn-green:hover { background: #22c55e; }
+    .badge { display:inline-block; border-radius:.5rem; background:#f3f4f6; padding:.25rem .5rem; font-size:.75rem; font-weight:600; color:#374151; }
+    .card { border-radius: 1rem; border: 1px solid #e5e7eb; background: #fff; padding: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; padding: 1rem; z-index: 50; }
+    .modal { max-width: 720px; width: 100%; background: white; border-radius: 1rem; box-shadow: 0 10px 30px rgba(0,0,0,.15); }
+    .link { text-decoration: underline; }
+    .hide { display:none }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <div id="app" class="mx-auto max-w-6xl px-4 py-6 space-y-4"></div>
+
+  <!-- Auth Screen -->
+  <template id="tpl-auth">
+    <div class="max-w-md mx-auto mt-12 space-y-3">
+      <h1 class="text-2xl font-extrabold">Bateria</h1>
+      <div class="flex gap-2">
+        <button id="tab-login" class="btn btn-dark flex-1">Entrar</button>
+        <button id="tab-signup" class="btn btn-ghost flex-1">Criar conta</button>
+      </div>
+      <div id="view"></div>
+      <div id="auth-msg" class="text-sm text-gray-500"></div>
+    </div>
+  </template>
+
+  <!-- Modal: Criar Ensaio -->
+  <div id="modal-add-ensaio" class="modal-backdrop">
+    <div class="modal">
+      <div class="p-4 border-b flex items-center justify-between">
+        <h3 class="text-lg font-semibold">Novo Ensaio</h3>
+        <button class="btn btn-ghost" data-close="#modal-add-ensaio">Fechar</button>
+      </div>
+      <div class="p-4 space-y-3">
+        <label class="block">
+          <span class="text-sm text-gray-500">Data do ensaio</span>
+          <input id="add-data" type="date" class="mt-1 w-full rounded-2xl border px-3 py-2 text-sm">
+        </label>
+        <label class="block">
+          <span class="text-sm text-gray-500">Observações</span>
+          <textarea id="add-observacoes" class="mt-1 w-full h-24 rounded-2xl border px-3 py-2 text-sm" placeholder="Ex.: repertório, foco do dia…"></textarea>
+        </label>
+        <div class="block">
+          <div class="text-sm text-gray-500 mb-1">Selecione os presentes</div>
+          <div id="add-ritmistas" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-auto border rounded-2xl p-2"></div>
+          <label class="flex items-center gap-2 mt-2 text-sm">
+            <input id="add-mark-absent" type="checkbox" class="rounded" checked> Marcar demais como <b>AUSENTE</b>
+          </label>
+        </div>
+      </div>
+      <div class="p-4 border-t flex justify-end gap-2">
+        <button class="btn btn-dark" id="btn-save-ensaio">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Gerenciar Presenças de um Ensaio -->
+  <div id="modal-presencas" class="modal-backdrop">
+    <div class="modal">
+      <div class="p-4 border-b flex items-center justify-between">
+        <h3 class="text-lg font-semibold">Presenças do Ensaio</h3>
+        <button class="btn btn-ghost" data-close="#modal-presencas">Fechar</button>
+      </div>
+      <div class="p-4 space-y-3">
+        <div class="text-sm text-gray-600" id="pres-ensaio-info">—</div>
+        <div id="pres-list" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-auto border rounded-2xl p-2"></div>
+        <label class="flex items-center gap-2 mt-2 text-sm">
+          <input id="pres-mark-absent" type="checkbox" class="rounded" checked> Marcar não selecionados como <b>AUSENTE</b>
+        </label>
+      </div>
+      <div class="p-4 border-t flex justify-end gap-2">
+        <button class="btn btn-dark" id="btn-save-presencas">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ========= Helpers =========
+const $ = (sel, el=document) => el.querySelector(sel);
+const el = (t, c='', html='') => { const e=document.createElement(t); if(c) e.className=c; if(html) e.innerHTML=html; return e; };
+const fmtBR = iso => (iso && iso.length===10) ? iso.split('-').reverse().join('/') : iso;
+const todayISO = () => new Date().toISOString().slice(0,10);
+
+// ========= Supabase =========
+const SUPABASE_URL = "https://eauzqljvfbleavkrzouq.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVhdXpxbGp2ZmJsZWF2a3J6b3VxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNzQ1NTgsImV4cCI6MjA3MzY1MDU1OH0.iKyMJ3NUHwDBG4hhdrdHyrX-Of3IT_INuN3nBcocSpY";
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let CURRENT_UID = null;
+
+// ========= Topbar =========
+function topbar(active='dashboard') {
+  const wrap = el('div','flex items-center justify-between');
+  const left = el('div','flex items-center gap-3','<a href="#dashboard" class="h-9 w-9 rounded-xl bg-black text-white flex items-center justify-center font-bold">B</a><h1 class="text-lg md:text-2xl font-semibold">Bateria</h1>');
+  const nav  = el('nav','flex gap-2');
+  const mk = (hash,label) => { const a = el('a','btn '+(active===hash?'btn-dark':'btn-ghost'),label); a.href = '#'+hash; return a; };
+  nav.append(mk('dashboard','Dashboard'), mk('ritmistas','Ritmistas'), mk('ensaios','Ensaios'), mk('backup','Backup'));
+  const right = el('div','flex items-center gap-2',`<span id="emailbox" class="text-xs text-gray-500"></span><button id="logout" class="btn btn-ghost">Sair</button>`);
+  wrap.append(left, nav, right);
+  return wrap;
+}
+
+// ========= Auth =========
+async function requireAuth() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    const root = $('#app'); root.innerHTML = '';
+    const node = document.importNode($('#tpl-auth').content, true);
+    root.append(node);
+    const view = $('#view');
+    const msg = $('#auth-msg');
+    const renderLogin = ()=> {
+      view.innerHTML = `
+        <label class="block"><span class="text-sm text-gray-500">Email</span><input id="email" class="mt-1 w-full rounded-2xl border px-3 py-2 text-sm" placeholder="email"/></label>
+        <label class="block"><span class="text-sm text-gray-500">Senha</span><input id="pass" type="password" class="mt-1 w-full rounded-2xl border px-3 py-2 text-sm" placeholder="senha"/></label>
+        <div class="flex gap-2 mt-2"><button id="signin" class="btn btn-dark">Entrar</button><button id="reset" class="btn btn-ghost">Esqueci a senha</button></div>`;
+      $('#signin').onclick = async ()=>{
+        msg.textContent=''; const email=$('#email').value.trim(); const password=$('#pass').value;
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        msg.textContent = error ? error.message : 'OK'; if(!error) location.reload();
+      };
+      $('#reset').onclick = async ()=>{
+        const email=$('#email').value.trim();
+        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: location.origin });
+        msg.textContent = error ? error.message : 'Se existir conta, você receberá um email.';
+      };
+    };
+    const renderSignup = ()=> {
+      view.innerHTML = `
+        <label class="block"><span class="text-sm text-gray-500">Email</span><input id="semail" class="mt-1 w-full rounded-2xl border px-3 py-2 text-sm" placeholder="email"/></label>
+        <label class="block"><span class="text-sm text-gray-500">Senha</span><input id="spass" type="password" class="mt-1 w-full rounded-2xl border px-3 py-2 text-sm" placeholder="senha (mín. 6)"/></label>
+        <div class="mt-2"><button id="signup" class="btn btn-dark">Criar conta</button></div>`;
+      $('#signup').onclick = async ()=>{
+        msg.textContent=''; const email=$('#semail').value.trim(); const password=$('#spass').value;
+        const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: location.origin } });
+        msg.textContent = error ? error.message : 'Conta criada! Verifique seu email (se exigido) e faça login.';
+      };
+    };
+    renderLogin();
+    $('#tab-login').onclick = ()=> { $('#tab-login').className='btn btn-dark flex-1'; $('#tab-signup').className='btn btn-ghost flex-1'; renderLogin(); };
+    $('#tab-signup').onclick = ()=> { $('#tab-signup').className='btn btn-dark flex-1'; $('#tab-login').className='btn btn-ghost flex-1'; renderSignup(); };
+    throw new Error('no-auth');
+  }
+  CURRENT_UID = user.id;
+  return user;
+}
+
+// ========= DAO (Supabase) =========
+async function listRitmistas(q='') {
+  let query = supabase.from('ritmistas').select('*').eq('user_id', CURRENT_UID);
+  if (q) query = query.ilike('nome', `%${q}%`);
+  const { data, error } = await query.order('nome', { ascending: true });
+  if (error) { console.error(error); return []; }
+  return data||[];
+}
+async function getRitmista(id) {
+  const { data, error } = await supabase.from('ritmistas').select('*').eq('user_id', CURRENT_UID).eq('id', id).single();
+  if (error) { console.error(error); return null; }
+  return data;
+}
+async function createRitmista(fields) {
+  const { data, error } = await supabase.from('ritmistas').insert({ user_id: CURRENT_UID, ...fields }).select().single();
+  if (error) { console.error(error); alert('Erro ao criar ritmista'); return null; }
+  return data;
+}
+async function updateRitmista(id, fields) {
+  const { error } = await supabase.from('ritmistas').update(fields).eq('user_id', CURRENT_UID).eq('id', id);
+  if (error) { console.error(error); alert('Erro ao atualizar ritmista'); }
+}
+async function deleteRitmista(id) {
+  await supabase.from('presencas').delete().eq('user_id', CURRENT_UID).eq('ritmista_id', id);
+  const { error } = await supabase.from('ritmistas').delete().eq('user_id', CURRENT_UID).eq('id', id);
+  if (error) { console.error(error); alert('Erro ao apagar ritmista'); }
+}
+
+async function listEnsaios() {
+  const { data, error } = await supabase.from('ensaios').select('*').eq('user_id', CURRENT_UID).order('data', { ascending: false });
+  if (error) { console.error(error); return []; }
+  return data||[];
+}
+async function getEnsaio(id) {
+  const { data, error } = await supabase.from('ensaios').select('*').eq('user_id', CURRENT_UID).eq('id', id).single();
+  if (error) { console.error(error); return null; }
+  return data;
+}
+async function createEnsaio(dateISO, obs) {
+  const { data, error } = await supabase.from('ensaios').insert({ user_id: CURRENT_UID, data: dateISO, observacoes: obs||'' }).select().single();
+  if (error) { console.error(error); alert('Erro ao criar ensaio'); return null; }
+  return data;
+}
+async function updateEnsaio(id, fields) {
+  const { error } = await supabase.from('ensaios').update(fields).eq('user_id', CURRENT_UID).eq('id', id);
+  if (error) { console.error(error); alert('Erro ao atualizar ensaio'); }
+}
+async function deleteEnsaio(id) {
+  await supabase.from('presencas').delete().eq('user_id', CURRENT_UID).eq('ensaio_id', id);
+  const { error } = await supabase.from('ensaios').delete().eq('user_id', CURRENT_UID).eq('id', id);
+  if (error) { console.error(error); alert('Erro removendo ensaio'); }
+}
+async function listPresencasByEnsaio(ensaioId) {
+  const { data, error } = await supabase.from('presencas').select('*').eq('user_id', CURRENT_UID).eq('ensaio_id', ensaioId);
+  if (error) { console.error(error); return []; }
+  return data||[];
+}
+async function setPresencasForEnsaio(ensaioId, selectedIds, markAbsent=true) {
+  await supabase.from('presencas').delete().eq('user_id', CURRENT_UID).eq('ensaio_id', ensaioId);
+  const { data: rit } = await supabase.from('ritmistas').select('id').eq('user_id', CURRENT_UID);
+  const allIds = (rit||[]).map(r => String(r.id));
+  const rows = [];
+  allIds.forEach(id => {
+    if (selectedIds.includes(String(id))) rows.push({ user_id: CURRENT_UID, ensaio_id: ensaioId, ritmista_id: id, status: 'PRESENTE', observacoes: '' });
+    else if (markAbsent) rows.push({ user_id: CURRENT_UID, ensaio_id: ensaioId, ritmista_id: id, status: 'AUSENTE', observacoes: '' });
+  });
+  if (rows.length) { const res = await supabase.from('presencas').insert(rows); if (res.error) { console.error(res.error); alert('Erro salvando presenças'); } }
+}
+
+// ========= Seed opcional (cria perfis iniciais se vazio) =========
+const SEED_RITMISTAS = [
+  "ANNA FLAVIA","ARTHUR NOVAES","BRENNER","BRUNO","CAIQUE RESENDE","CARLOS","EDUARDA ARCANGELO","ENZO MARIANI","GUILHERME LIMA","GUSTAVO BANDIDA","KAIKE JUNEO","KAUE PEREIRA","LARA BANDIDA","LUANA CORDEIRO","MARCO ANTÔNIO","MATHEUS MOCIDADE","NETO","RODRIGO PISCADINHA","SILVIA","THALLES VIEIRA","THAY","VINICIUS (Bebê)","ADALBERON SOARES","CHINELO","GUILHERME ARNAUD","HEITOR","JONATHAN","JULIANA BRANDÃO","LUCAS KLEDEGLAU","MARCELA CUNHA","MAURÍCIO DA SILVA (DALESTE)","NATÁLIA CAMPOS","TÂNIA ALVES","THALES NUNES","VITÓRIA COUTO","YAN"
+];
+async function ensureSeedSupabase() {
+  const { data, error } = await supabase.from('ritmistas').select('id', { count: 'exact', head: true }).eq('user_id', CURRENT_UID);
+  // supabase-js v2: quando head: true, data é null; usar error?count? — faremos um select normal limitado
+  const { data: check } = await supabase.from('ritmistas').select('id').eq('user_id', CURRENT_UID).limit(1);
+  if ((check||[]).length === 0) {
+    const rows = SEED_RITMISTAS.map(nome => ({ user_id: CURRENT_UID, nome, apelido:'', telefone:'', camiseta:'', calca:'', sapato:'' }));
+    const res = await supabase.from('ritmistas').insert(rows);
+    if (res.error) console.error(res.error);
+  }
+}
+
+// ========= UI Pages (igual ao offline, mas usando DAO do Supabase) =========
+
+function topbarNode(active) {
+  const t = topbar(active);
+  t.querySelector('#logout').onclick = async ()=>{ await supabase.auth.signOut(); location.reload(); };
+  return t;
+}
+
+async function pageDashboard() {
+  const root = $('#app'); root.innerHTML='';
+  const user = await requireAuth(); if (!user) return;
+  await ensureSeedSupabase();
+  root.append(topbarNode('dashboard'));
+  $('#emailbox').textContent = user.email||'';
+
+  const cards = el('div','grid grid-cols-1 md:grid-cols-3 gap-4 mt-4');
+  const card = (title,val,desc='') => { const c=el('div','card'); c.innerHTML = `<div class="text-sm text-gray-500">{title}</div><div class="text-3xl font-extrabold">{val}</div><div class="text-xs text-gray-500 mt-1">{desc}</div>`; return c; };
+  root.append(cards);
+
+  const [ensaios, pres] = await Promise.all([listEnsaios(), listPresencasByEnsaio(-1).then(()=>[]) /* dummy to keep shape */]);
+  // calcular médias corretamente com supabase: vamos buscar todas presenças de todos ensaios do usuário
+  const { data: allPres } = await supabase.from('presencas').select('*').eq('user_id', CURRENT_UID);
+  const countsByEnsaio = new Map();
+  (allPres||[]).forEach(p => {
+    const c = countsByEnsaio.get(p.ensaio_id) || {PRESENTE:0,AUSENTE:0,JUSTIFICADA:0};
+    if (p.status in c) c[p.status]++;
+    countsByEnsaio.set(p.ensaio_id, c);
+  });
+  const n = (ensaios.length || 1);
+  let sumP=0, sumA=0;
+  ensaios.forEach(e => { const c=countsByEnsaio.get(e.id)||{PRESENTE:0,AUSENTE:0,JUSTIFICADA:0}; sumP+=c.PRESENTE; sumA+=c.AUSENTE; });
+  cards.append(card('Média de Presenças / Ensaio', (sumP/n).toFixed(1), 'Qtde de presentes por ensaio'),
+               card('Média de Ausências / Ensaio', (sumA/n).toFixed(1), 'Qtde de ausentes por ensaio'),
+               card('Total de Ensaios', ensaios.length, 'Em ordem decrescente'));
+
+  const listCard = el('div','card mt-2');
+  listCard.innerHTML = `<div class="mb-3 flex items-center justify-between"><h3 class="text-lg font-semibold">Ensaios</h3><span class="text-sm text-gray-500">Clique para entrar</span></div>`;
+  const tableWrap = el('div','overflow-auto rounded-xl border');
+  const table = el('table','min-w-full text-sm');
+  table.innerHTML = '<thead class="bg-gray-50"><tr><th class="px-3 py-2 text-left">Data</th><th class="px-3 py-2 text-left">Presentes</th><th class="px-3 py-2 text-left">Ausentes</th><th class="px-3 py-2 text-left">Justificadas</th><th class="px-3 py-2 text-left">Ações</th></tr></thead><tbody></tbody>';
+  const tbody = table.querySelector('tbody');
+  if (!ensaios.length) { tbody.innerHTML='<tr><td colspan="5" class="px-3 py-6 text-center text-gray-500">Sem ensaios.</td></tr>'; }
+  else ensaios.forEach(e => {
+    const c = countsByEnsaio.get(e.id) || {PRESENTE:0,AUSENTE:0,JUSTIFICADA:0};
+    const tr = el('tr','odd:bg-white even:bg-gray-50',`<td class="px-3 py-2">{fmtBR(e.data)}</td>
+      <td class="px-3 py-2">{c.PRESENTE}</td><td class="px-3 py-2">{c.AUSENTE}</td><td class="px-3 py-2">{c.JUSTIFICADA}</td>
+      <td class="px-3 py-2"><a class="btn btn-dark" href="#ensaio:{e.id}">Entrar</a></td>`);
+    tbody.append(tr);
+  });
+  tableWrap.append(table); listCard.append(tableWrap); root.append(listCard);
+}
+
+let rit_current=[], isTable=false;
+async function pageRitmistas() {
+  const root = $('#app'); root.innerHTML='';
+  const user = await requireAuth(); if (!user) return;
+  await ensureSeedSupabase();
+  root.append(topbarNode('ritmistas'));
+  $('#emailbox').textContent = user.email||'';
+
+  const bar = el('div','flex items-center justify-between mt-4');
+  bar.append(el('h2','text-xl font-semibold','Ritmistas'), el('div','flex flex-wrap items-center gap-2',
+    '<button id="btn-import" class="btn btn-ghost">Importar CSV/Excel</button><button id="btn-export" class="btn btn-ghost">Exportar CSV</button><button id="btn-toggle-view" class="btn btn-ghost">Tabela</button><button id="btn-add" class="btn btn-green">+ Adicionar Ritmista</button>'
+  ));
+  root.append(bar);
+
+  const filters = el('div','card mt-2',`
+    <div class="grid grid-cols-1 gap-3 md:grid-cols-5">
+      <label class="block md:col-span-2">
+        <span class="text-sm text-gray-500">Buscar por nome/apelido</span>
+        <div class="mt-1 flex items-center gap-2 rounded-xl border px-3 py-2">
+          <span>🔎</span><input id="q" class="w-full outline-none text-sm" placeholder="Buscar por nome ou apelido…">
+        </div>
+      </label>
+      <label class="block"><span class="text-sm text-gray-500">Camiseta</span>
+        <input id="f-camiseta" class="mt-1 w-full rounded-2xl border px-3 py-2 text-sm" placeholder="Ex.: P, M, G">
+      </label>
+      <label class="block"><span class="text-sm text-gray-500">Calça / Sapato</span>
+        <div class="mt-1 grid grid-cols-2 gap-2">
+          <input id="f-calca" class="rounded-2xl border px-3 py-2 text-sm" placeholder="Ex.: 42">
+          <input id="f-sapato" class="rounded-2xl border px-3 py-2 text-sm" placeholder="Ex.: 40">
+        </div>
+      </label>
+    </div>`);
+  root.append(filters);
+
+  const cardsSec = el('section','','<div id="view-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>');
+  const tableSec = el('section','hidden overflow-auto rounded-2xl border bg-white','<table class="min-w-full text-sm"><thead class="bg-gray-50"><tr><th class="px-3 py-2 text-left">Nome</th><th class="px-3 py-2 text-left">Apelido</th><th class="px-3 py-2 text-left">Telefone</th><th class="px-3 py-2 text-left">Camiseta</th><th class="px-3 py-2 text-left">Calça</th><th class="px-3 py-2 text-left">Sapato</th><th class="px-3 py-2 text-left">Ações</th></tr></thead><tbody id="table-body"></tbody></table>');
+  root.append(cardsSec, tableSec);
+
+  const setView = (tableMode) => {
+    isTable = tableMode;
+    if (isTable) { cardsSec.classList.add('hidden'); tableSec.classList.remove('hidden'); $('#btn-toggle-view').textContent='Cards'; renderTable(rit_current); }
+    else { tableSec.classList.add('hidden'); cardsSec.classList.remove('hidden'); $('#btn-toggle-view').textContent='Tabela'; renderCards(rit_current); }
+  };
+  const applyFilters = (rows) => {
+    const q = $('#q').value.trim().toLowerCase();
+    const fc = $('#f-camiseta').value.trim().toLowerCase();
+    const fcal = $('#f-calca').value.trim().toLowerCase();
+    const fs = $('#f-sapato').value.trim().toLowerCase();
+    return rows.filter(r => {
+      const matchQ = !q || (r.nome||'').toLowerCase().includes(q) || (r.apelido||'').toLowerCase().includes(q);
+      const matchCam = !fc || String(r.camiseta||'').toLowerCase() === fc;
+      const matchCal = !fcal || String(r.calca||'').toLowerCase() === fcal;
+      const matchSap = !fs || String(r.sapato||'').toLowerCase() === fs;
+      return matchQ && matchCam && matchCal && matchSap;
+    });
+  };
+  const renderCards = (rows) => {
+    const wrap = $('#view-cards'); wrap.innerHTML='';
+    const filtered = applyFilters(rows);
+    if(!filtered.length){ wrap.innerHTML='<div class="col-span-full card text-center text-gray-500">Sem ritmistas com esses filtros.</div>'; return; }
+    filtered.forEach(r => {
+      const card = el('div','card',`
+        <div class="flex items-start justify-between">
+          <div class="flex items-center gap-2">
+            <div class="h-9 w-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">👤</div>
+            <div><a class="font-semibold link" href="#ritmista:{r.id}">{r.nome||'-'}</a><div class="text-sm text-gray-500">{r.apelido?('“'+r.apelido+'”'):'&nbsp;'}</div></div>
+          </div>
+          <div class="flex gap-2 text-gray-500">
+            <button class="btn btn-ghost text-xs" data-edit="{r.id}">✏️ Editar</button>
+            <button class="btn btn-ghost text-xs" data-del="{r.id}">🗑️ Apagar</button>
+          </div>
+        </div>
+        <div class="mt-3 grid grid-cols-1 gap-2 text-sm text-gray-700">
+          <div>Telefone: <span class="font-medium">{r.telefone||'-'}</span></div>
+          <div class="flex flex-wrap gap-2">
+            <span class="badge">Camiseta: {r.camiseta||'-'}</span>
+            <span class="badge">Calça: {r.calca||'-'}</span>
+            <span class="badge">Sapato: {r.sapato||'-'}</span>
+          </div>
+        </div>
+        <div class="mt-3 flex items-center justify-between">
+          <span class="text-sm text-gray-600">&nbsp;</span>
+          <a class="btn btn-ghost" href="#ritmista:{r.id}">Ver perfil</a>
+        </div>`);
+      wrap.append(card);
+    });
+    wrap.querySelectorAll('[data-edit]').forEach(btn => btn.addEventListener('click', async (e)=>{
+      const id = e.currentTarget.getAttribute('data-edit');
+      const r = await getRitmista(id);
+      if (!r) return alert('Ritmista não encontrado.');
+      const nome = prompt('Nome', r.nome||''); if (nome===null) return;
+      const apelido = prompt('Apelido', r.apelido||''); if (apelido===null) return;
+      const telefone = prompt('Telefone', r.telefone||''); if (telefone===null) return;
+      const camiseta = prompt('Camiseta (P/M/G...)', r.camiseta||''); if (camiseta===null) return;
+      const calca = prompt('Calça', r.calca||''); if (calca===null) return;
+      const sapato = prompt('Sapato', r.sapato||''); if (sapato===null) return;
+      await updateRitmista(id, { nome, apelido, telefone, camiseta, calca, sapato });
+      rit_current = await listRitmistas();
+      (isTable ? renderTable : renderCards)(rit_current);
+    }));
+    wrap.querySelectorAll('[data-del]').forEach(btn => btn.addEventListener('click', async (e)=>{
+      const id = e.currentTarget.getAttribute('data-del');
+      const r = await getRitmista(id); if (!r) return;
+      if (!confirm('Apagar o ritmista "'+(r.nome||id)+'"? Esta ação remove também suas presenças.')) return;
+      await deleteRitmista(id);
+      rit_current = await listRitmistas();
+      (isTable ? renderTable : renderCards)(rit_current);
+    }));
+  };
+  const renderTable = (rows) => {
+    const tbody = $('#table-body'); tbody.innerHTML='';
+    const filtered = applyFilters(rows);
+    if(!filtered.length){ tbody.innerHTML='<tr><td colspan="8" class="px-3 py-6 text-center text-gray-500">Sem ritmistas com esses filtros.</td></tr>'; return; }
+    filtered.forEach(r => {
+      const tr = el('tr','odd:bg-white even:bg-gray-50',`
+        <td class="px-3 py-2"><a class="link" href="#ritmista:{r.id}">{r.nome||'-'}</a></td>
+        <td class="px-3 py-2">{r.apelido||'-'}</td><td class="px-3 py-2">{r.telefone||'-'}</td>
+        <td class="px-3 py-2">{r.camiseta||'-'}</td><td class="px-3 py-2">{r.calca||'-'}</td><td class="px-3 py-2">{r.sapato||'-'}</td>
+        <td class="px-3 py-2 flex gap-2"><a class="btn btn-ghost text-xs" href="#ritmista:{r.id}">Abrir</a><button class="btn btn-ghost text-xs" data-edit="{r.id}">Editar</button><button class="btn btn-ghost text-xs" data-del="{r.id}">Apagar</button></td>`);
+      tbody.append(tr);
+    });
+    tbody.querySelectorAll('[data-edit]').forEach(btn => btn.addEventListener('click', async (e)=>{
+      const id = e.currentTarget.getAttribute('data-edit');
+      const r = await getRitmista(id); if (!r) return alert('Ritmista não encontrado.');
+      const nome = prompt('Nome', r.nome||''); if (nome===null) return;
+      const apelido = prompt('Apelido', r.apelido||''); if (apelido===null) return;
+      const telefone = prompt('Telefone', r.telefone||''); if (telefone===null) return;
+      const camiseta = prompt('Camiseta (P/M/G...)', r.camiseta||''); if (camiseta===null) return;
+      const calca = prompt('Calça', r.calca||''); if (calca===null) return;
+      const sapato = prompt('Sapato', r.sapato||''); if (sapato===null) return;
+      await updateRitmista(id, { nome, apelido, telefone, camiseta, calca, sapato });
+      rit_current = await listRitmistas();
+      renderTable(rit_current);
+    }));
+    tbody.querySelectorAll('[data-del]').forEach(btn => btn.addEventListener('click', async (e)=>{
+      const id = e.currentTarget.getAttribute('data-del');
+      const r = await getRitmista(id); if (!r) return;
+      if (!confirm('Apagar o ritmista "'+(r.nome||id)+'"? Esta ação remove também suas presenças.')) return;
+      await deleteRitmista(id);
+      rit_current = await listRitmistas();
+      renderTable(rit_current);
+    }));
+  };
+
+  $('#btn-toggle-view').addEventListener('click', ()=> setView(!isTable));
+  $('#btn-export').addEventListener('click', async ()=> {
+    const rows = rit_current;
+    const headers = ['id','nome','apelido','telefone','camiseta','calca','sapato'];
+    const esc = (v) => { if(v==null) return ''; const s=String(v); return (s.includes('"')||s.includes(',')||s.includes('\n'))?('"'+s.replace(/"/g,'""')+'"'):s; };
+    const csv = [headers.join(',')].concat(rows.map(r => headers.map(h=>esc(r[h]||'')).join(','))).join('\n');
+    const blob=new Blob([csv], {type:'text/csv'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='ritmistas.csv'; a.click(); URL.revokeObjectURL(url);
+  });
+  $('#btn-import').addEventListener('click', async ()=> {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.xlsx,.xls,.csv';
+    input.onchange = async (e)=>{
+      const file = e.target.files && e.target.files[0]; if (!file) return;
+      const buf = await file.arrayBuffer();
+      const normalizeRows = (arr) => arr.map(obj => ({
+        id: obj.id||undefined,
+        nome: obj.nome||'',
+        apelido: obj.apelido||'',
+        telefone: obj.telefone||'',
+        camiseta: obj.camiseta||'',
+        calca: obj.calca||'',
+        sapato: obj.sapato||'',
+      }));
+      let rows = [];
+      const fname = (file.name||'').toLowerCase();
+      try {
+        if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
+          const wb = XLSX.read(buf, { type: 'array' });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+          rows = normalizeRows(json);
+        } else {
+          const text = new TextDecoder().decode(new Uint8Array(buf));
+          const lines = text.split(/\r?\n/).filter(Boolean);
+          const header = lines.shift();
+          const cols = header.split(',').map(s=>s.trim());
+          const idx = (name) => cols.findIndex(c => c.toLowerCase() === name);
+          rows = lines.map(line => {
+            const parts = line.split(',');
+            const get = (n) => parts[idx(n)]||'';
+            return {
+              id: get('id')||undefined,
+              nome: get('nome'), apelido: get('apelido'), telefone: get('telefone'),
+              camiseta: get('camiseta'), calca: get('calca'), sapato: get('sapato')
+            };
+          });
+        }
+      } catch (err) { console.error(err); alert('Falha ao ler arquivo.'); return; }
+      // upsert no Supabase
+      rows = rows.map(r => ({ user_id: CURRENT_UID, ...r }));
+      const { error } = await supabase.from('ritmistas').upsert(rows);
+      if (error) { console.error(error); alert('Erro ao importar'); return; }
+      rit_current = await listRitmistas();
+      setView(isTable);
+      alert('Importado!');
+    };
+    input.click();
+  });
+  $('#btn-add').addEventListener('click', async ()=> {
+    const nome = prompt('Nome do ritmista'); if (!nome) return;
+    await createRitmista({ nome, apelido:'', telefone:'', camiseta:'', calca:'', sapato:'' });
+    rit_current = await listRitmistas();
+    setView(isTable);
+  });
+  ['#q','#f-camiseta','#f-calca','#f-sapato'].forEach(s => { $(s).addEventListener('input', ()=> setView(isTable)); $(s).addEventListener('change', ()=> setView(isTable)); });
+
+  rit_current = await listRitmistas();
+  setView(false);
+}
+
+async function pageRitmistaDetail(id) {
+  const root = $('#app'); root.innerHTML='';
+  const user = await requireAuth(); if (!user) return;
+  root.append(topbarNode('ritmistas'));
+  $('#emailbox').textContent = user.email||'';
+
+  const rit = await getRitmista(id);
+  const { data: pres } = await supabase.from('presencas').select('*').eq('user_id', CURRENT_UID).eq('ritmista_id', id);
+  if (!rit || !rit.id) { root.append(el('div','p-6 text-red-600','Ritmista não encontrado.')); return; }
+
+  const total = (pres||[]).length;
+  const c = (pres||[]).reduce((acc,p)=> (acc[p.status]=(acc[p.status]||0)+1, acc), {});
+  const freq = total ? (((c['PRESENTE']||0)/total*100).toFixed(1)+'%') : '—';
+  const aus = total ? (((c['AUSENTE']||0)/total*100).toFixed(1)+'%') : '—';
+  const jus = total ? (((c['JUSTIFICADA']||0)/total*100).toFixed(1)+'%') : '—';
+
+  const head = el('div','flex items-center justify-between mt-4');
+  head.append(el('div','flex items-center gap-3',`
+    <div class="h-9 w-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">👤</div>
+    <div><div class="text-xl font-semibold">{rit.nome||'-'}</div><div class="text-sm text-gray-500">{rit.apelido?('“'+rit.apelido+'”'):'&nbsp;'}</div></div>`));
+  head.append(el('div','flex gap-2', `<a href="#ritmistas" class="btn btn-ghost">Voltar</a>`));
+  root.append(head);
+
+  const cards = el('div','grid grid-cols-1 md:grid-cols-4 gap-4 mt-4');
+  const card = (t,v,d='') => { const c=el('div','card'); c.innerHTML=`<div class="text-sm text-gray-500">{t}</div><div class="text-2xl font-extrabold">{v}</div><div class="text-xs text-gray-500 mt-1">{d}</div>`; return c; };
+  cards.append(card('Média de Frequência', freq, 'Presenças / total'),
+               card('Média de Ausência', aus, 'Ausências / total'),
+               card('Justificadas', jus, 'Proporção'),
+               card('Total de Ensaios', total, 'Com registro de presença'));
+  root.append(cards);
+
+  const cardInfo = el('div','card');
+  cardInfo.innerHTML = `
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div><div class="text-sm text-gray-500">Telefone</div><div class="font-medium">{rit.telefone||'-'}</div></div>
+      <div><div class="text-sm text-gray-500">Camiseta</div><div class="font-medium">{rit.camiseta||'-'}</div></div>
+      <div><div class="text-sm text-gray-500">Calça</div><div class="font-medium">{rit.calca||'-'}</div></div>
+      <div><div class="text-sm text-gray-500">Sapato</div><div class="font-medium">{rit.sapato||'-'}</div></div>
+    </div>`;
+  root.append(cardInfo);
+
+  const { data: ensaios } = await supabase.from('ensaios').select('id,data,observacoes').eq('user_id', CURRENT_UID);
+  const dateMap = new Map((ensaios||[]).map(e=>[String(e.id), e.data]));
+
+  const hist = el('div','card mt-2');
+  hist.innerHTML = '<div class="text-lg font-semibold mb-2">Histórico de presenças</div>';
+  const table = el('table','min-w-full text-sm');
+  table.innerHTML = '<thead class="bg-gray-50"><tr><th class="px-3 py-2 text-left">Data</th><th class="px-3 py-2 text-left">Status</th><th class="px-3 py-2 text-left">Obs.</th></tr></thead><tbody></tbody>';
+  const tbody = table.querySelector('tbody');
+  if (!pres || pres.length===0) tbody.innerHTML = '<tr><td colspan="3" class="px-3 py-6 text-center text-gray-500">Sem registros.</td></tr>';
+  else {
+    pres.sort((a,b)=> (dateMap.get(String(b.ensaio_id))||'').localeCompare(dateMap.get(String(a.ensaio_id))||''));
+    pres.forEach(p => tbody.append(el('tr','odd:bg-white even:bg-gray-50',`
+      <td class="px-3 py-2">{fmtBR(dateMap.get(String(p.ensaio_id)) || '—')}</td>
+      <td class="px-3 py-2">{p.status}</td>
+      <td class="px-3 py-2">{p.observacoes||'—'}</td>`)));
+  }
+  hist.append(table); root.append(hist);
+}
+
+async function pageEnsaios() {
+  const root = $('#app'); root.innerHTML='';
+  const user = await requireAuth(); if (!user) return;
+  await ensureSeedSupabase();
+  root.append(topbarNode('ensaios'));
+  $('#emailbox').textContent = user.email||'';
+
+  const wrap = el('div','mt-4 space-y-4');
+  const header = el('div','flex items-center justify-between');
+  header.append(el('h2','text-xl font-semibold','Ensaios'),
+                el('button','btn btn-green','+ Adicionar Ensaio'));
+  wrap.append(header);
+
+  const listContainer = el('div','space-y-2','');
+  wrap.append(listContainer);
+  root.append(wrap);
+
+  const renderList = async () => {
+    const ensaios = await listEnsaios();
+    listContainer.innerHTML='';
+    if (!ensaios.length){
+      listContainer.innerHTML='<div class="card text-gray-500 text-center p-4">Nenhum ensaio cadastrado.</div>';
+    } else {
+      for (const e of ensaios) {
+        const pres = await listPresencasByEnsaio(e.id);
+        const counts = pres.reduce((acc,p)=> (acc[p.status]=(acc[p.status]||0)+1, acc), {});
+        const row = el('div','card flex items-center justify-between',
+          `<div><div class="font-semibold">{fmtBR(e.data)}</div><div class="text-xs text-gray-500">{e.observacoes||'—'}</div></div>
+           <div class="text-xs flex gap-2">
+             <span class="badge">P {counts['PRESENTE']||0}</span>
+             <span class="badge">A {counts['AUSENTE']||0}</span>
+             <span class="badge">J {counts['JUSTIFICADA']||0}</span>
+             <a class="btn btn-dark ml-2" href="#ensaio:{e.id}">Entrar</a><button class="btn btn-ghost ml-2 text-xs" data-edit-ensaio="{e.id}">Editar</button><button class="btn btn-ghost ml-2 text-xs" data-del-ensaio="{e.id}">Excluir</button>
+           </div>`);
+        listContainer.append(row);
+        row.querySelectorAll('[data-edit-ensaio]').forEach(btn => btn.addEventListener('click', async (ev)=>{
+          const id = ev.currentTarget.getAttribute('data-edit-ensaio');
+          const ens = await getEnsaio(id); if (!ens) return;
+          const data = prompt('Data do ensaio (AAAA-MM-DD):', ens.data||'') || ens.data;
+          const obs = prompt('Observações:', ens.observacoes||'') ?? ens.observacoes;
+          await updateEnsaio(id, { data, observacoes: obs });
+          renderList();
+        }));
+        row.querySelectorAll('[data-del-ensaio]').forEach(btn => btn.addEventListener('click', async (ev)=>{
+          const id = ev.currentTarget.getAttribute('data-del-ensaio');
+          if (confirm('Excluir este ensaio?')){ await deleteEnsaio(id); renderList(); }
+        }));
+      }
+    }
+  };
+
+  header.querySelector('button').addEventListener('click', async ()=>{
+    await renderAddModal();
+    $('#modal-add-ensaio').style.display='flex';
+  });
+  document.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', (e)=>{ $(e.target.getAttribute('data-close')).style.display='none'; }));
+
+  const renderAddModal = async ()=>{
+    $('#add-data').value = todayISO();
+    $('#add-observacoes').value = '';
+    $('#add-mark-absent').checked = true;
+    const wrap = $('#add-ritmistas'); wrap.innerHTML='Carregando…';
+    const rit = await listRitmistas();
+    wrap.innerHTML='';
+    (rit||[]).forEach(r => {
+      const row = el('label','flex items-center gap-2 border rounded-xl px-3 py-2 text-sm');
+      row.innerHTML = `<input type="checkbox" value="{r.id}" class="rounded"> <span class="font-medium">{r.nome}</span> <span class="text-gray-500">({r.apelido||'—'})</span>`;
+      wrap.append(row);
+    });
+    $('#btn-save-ensaio').onclick = async ()=> {
+      const date = $('#add-data').value || todayISO();
+      const obs = $('#add-observacoes').value || '';
+      const markAbsent = $('#add-mark-absent').checked;
+      const selected = Array.from(wrap.querySelectorAll('input[type="checkbox"]:checked')).map(c=>String(c.value));
+      const ens = await createEnsaio(date, obs);
+      await setPresencasForEnsaio(ens.id, selected, markAbsent);
+      $('#modal-add-ensaio').style.display='none';
+      location.hash = '#ensaio:'+ens.id;
+    };
+  };
+
+  renderList();
+}
+
+async function pageEnsaioDetail(id){
+  const root = $('#app'); root.innerHTML=''; 
+  const user = await requireAuth(); if (!user) return;
+  root.append(topbarNode('ensaios')); $('#emailbox').textContent = user.email||'';
+  const ens = await getEnsaio(id);
+  if (!ens) { root.append(el('div','p-6 text-red-600','Ensaio não encontrado.')); return; }
+  const pres = await listPresencasByEnsaio(id);
+  const counts = pres.reduce((acc,p)=> (acc[p.status]=(acc[p.status]||0)+1, acc), {});
+  const total = pres.length || 1;
+
+  const head = el('div','flex items-center justify-between mt-2');
+  head.append(el('div','',`<div class="text-xl font-semibold">Ensaio — {fmtBR(ens.data)}</div><div class="text-sm text-gray-500">{ens.observacoes||'—'}</div>`));
+  const actions = el('div','flex gap-2');
+  const btnEditPres = el('button','btn btn-ghost','Gerenciar Presenças');
+  const btnVoltar = el('a','btn btn-ghost','Voltar'); btnVoltar.href='#ensaios';
+  actions.append(btnEditPres, btnVoltar); head.append(actions);
+  root.append(head);
+
+  const cards = el('div','grid grid-cols-1 md:grid-cols-4 gap-4 mt-4');
+  const card = (t,v,d='') => { const c=el('div','card'); c.innerHTML=`<div class="text-sm text-gray-500">{t}</div><div class="text-2xl font-extrabold">{v}</div><div class="text-xs text-gray-500 mt-1">{d}</div>`; return c; };
+  cards.append(card('Presentes', counts['PRESENTE']||0, 'Qtde no dia'),
+               card('Ausentes', counts['AUSENTE']||0, 'Qtde no dia'),
+               card('Justificadas', counts['JUSTIFICADA']||0, 'Qtde no dia'),
+               card('Total registros', total, 'Presenças cadastradas'));
+  root.append(cards);
+
+  const { data: rit } = await supabase.from('ritmistas').select('id,nome').eq('user_id', CURRENT_UID);
+  const map = new Map((rit||[]).map(r=>[String(r.id), r.nome]));
+  const box = el('div','card mt-2'); box.innerHTML = '<div class="text-lg font-semibold mb-2">Presenças</div>';
+  const table = el('table','min-w-full text-sm');
+  table.innerHTML = '<thead class="bg-gray-50"><tr><th class="px-3 py-2 text-left">Ritmista</th><th class="px-3 py-2 text-left">Status</th><th class="px-3 py-2 text-left">Obs.</th></tr></thead><tbody></tbody>';
+  const tbody = table.querySelector('tbody');
+  if (!pres.length) tbody.innerHTML = '<tr><td colspan="3" class="px-3 py-6 text-center text-gray-500">Sem presenças cadastradas.</td></tr>';
+  else pres.forEach(p => tbody.append(el('tr','odd:bg-white even:bg-gray-50',`<td class="px-3 py-2"><a class="link" href="#ritmista:{p.ritmista_id}">{map.get(String(p.ritmista_id))||p.ritmista_id}</a></td><td class="px-3 py-2">{p.status}</td><td class="px-3 py-2">{p.observacoes||'—'}</td>`)));
+  box.append(table); root.append(box);
+
+  btnEditPres.addEventListener('click', async ()=>{ await openManagePresencasModal(id, ens); });
+}
+
+async function openManagePresencasModal(ensaioId, ens){
+  $('#pres-ensaio-info').textContent = `Data {fmtBR(ens.data)} — selecione quem esteve PRESENTE`;
+  const wrap = $('#pres-list'); wrap.innerHTML = 'Carregando…';
+  const [rit, pres] = await Promise.all([ supabase.from('ritmistas').select('id,nome,apelido').eq('user_id', CURRENT_UID).then(r=>r.data||[]), listPresencasByEnsaio(ensaioId) ]);
+  wrap.innerHTML = '';
+  const presentSet = new Set(pres.filter(p=>p.status==='PRESENTE').map(p=>String(p.ritmista_id)));
+  (rit||[]).forEach(r => {
+    const row = el('label','flex items-center gap-2 border rounded-xl px-3 py-2 text-sm');
+    row.innerHTML = `<input type="checkbox" value="{r.id}" {presentSet.has(String(r.id))?'checked':''} class="rounded"> <span class="font-medium">{r.nome}</span> <span class="text-gray-500">({r.apelido||'—'})</span>`;
+    wrap.append(row);
+  });
+  $('#pres-mark-absent').checked = true;
+  $('#modal-presencas').style.display = 'flex';
+
+  $('#btn-save-presencas').onclick = async ()=> {
+    const selected = Array.from(wrap.querySelectorAll('input[type="checkbox"]:checked')).map(c=>String(c.value));
+    const markAbsent = $('#pres-mark-absent').checked;
+    await setPresencasForEnsaio(ensaioId, selected, markAbsent);
+    $('#modal-presencas').style.display = 'none';
+    location.hash = '#ensaio:'+ensaioId;
+  };
+}
+
+async function pageBackup(){
+  const root = $('#app'); root.innerHTML='';
+  const user = await requireAuth(); if (!user) return;
+  root.append(topbarNode('backup'));
+  $('#emailbox').textContent = user.email||'';
+
+  const wrap = el('div','mt-4 space-y-4');
+  const card = el('div','card');
+  card.innerHTML = `
+    <div class="mb-2">
+      <div class="text-lg font-semibold">Backup & Restauração</div>
+      <div class="text-sm text-gray-500">Exporta/importa seus dados deste usuário (JSON).</div>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <button id="btn-backup" class="btn btn-dark">Gerar arquivo de backup (.json)</button>
+      <label class="btn btn-ghost cursor-pointer">Importar backup (.json)<input id="file-restore" type="file" accept=".json" class="hidden"></label>
+    </div>`;
+  wrap.append(card);
+  $('#app').append(wrap);
+
+  const exportData = async () => {
+    const [r,e,p] = await Promise.all([
+      supabase.from('ritmistas').select('*').eq('user_id', CURRENT_UID).then(r=>r.data||[]),
+      supabase.from('ensaios').select('*').eq('user_id', CURRENT_UID).then(r=>r.data||[]),
+      supabase.from('presencas').select('*').eq('user_id', CURRENT_UID).then(r=>r.data||[]),
+    ]);
+    const data = { ritmistas:r, ensaios:e, presencas:p };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g,'-');
+    a.href = url; a.download = `bateria_backup_{ts}.json`; a.click();
+    setTimeout(()=> URL.revokeObjectURL(url), 2000);
+  };
+
+  const restoreData = async (file) => {
+    try {
+      const txt = await file.text(); const data = JSON.parse(txt);
+      if (!confirm('Isso vai substituir SEUS dados (deste usuário). Continuar?')) return;
+      await supabase.from('presencas').delete().eq('user_id', CURRENT_UID);
+      await supabase.from('ensaios').delete().eq('user_id', CURRENT_UID);
+      await supabase.from('ritmistas').delete().eq('user_id', CURRENT_UID);
+      if (data.ritmistas?.length) await supabase.from('ritmistas').insert(data.ritmistas.map(x=>({user_id:CURRENT_UID,...x,id:undefined})));
+      if (data.ensaios?.length) await supabase.from('ensaios').insert(data.ensaios.map(x=>({user_id:CURRENT_UID,...x,id:undefined})));
+      if (data.presencas?.length) await supabase.from('presencas').insert(data.presencas.map(x=>({user_id:CURRENT_UID,...x,id:undefined})));
+      alert('Backup restaurado!'); location.hash='#dashboard';
+    } catch(e) { console.error(e); alert('Falha ao restaurar backup.'); }
+  };
+
+  $('#btn-backup').onclick = exportData;
+  $('#file-restore').onchange = (e)=>{ const f=e.target.files && e.target.files[0]; if (f) restoreData(f); };
+}
+
+// ========= Router =========
+async function router() {
+  const hash = (location.hash||'#dashboard').replace('#','');
+  if (hash==='dashboard') return pageDashboard();
+  if (hash==='ritmistas') return pageRitmistas();
+  if (hash==='ensaios') return pageEnsaios();
+  if (hash==='backup') return pageBackup();
+  if (hash.startsWith('ensaio:')) return pageEnsaioDetail(hash.split(':')[1]);
+  if (hash.startsWith('ritmista:')) return pageRitmistaDetail(hash.split(':')[1]);
+  return pageDashboard();
+}
+window.addEventListener('hashchange', router);
+router();
+</script>
+</body>
+</html>
